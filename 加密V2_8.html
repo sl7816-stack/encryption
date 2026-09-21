@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>物理隔離加密堡壘 V2.8 - 邏輯修正版</title>
+    <style>
+        :root { --bg-color: #0d1117; --text-color: #c9d1d9; --accent-color: #58a6ff; --border-color: #30363d; --success-color: #238636; --warn-color: #d29922; }
+        body { font-family: "SF Mono", "Monaco", monospace; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .container { width: 100%; max-width: 1000px; padding: 30px; border: 1px solid var(--border-color); background: #161b22; box-shadow: 0 10px 40px rgba(0,0,0,0.6); border-radius: 12px; }
+        h2 { border-bottom: 2px solid var(--accent-color); padding-bottom: 10px; font-weight: 300; margin-top: 0; color: var(--accent-color); text-align: center; letter-spacing: 2px; }
+        
+        .controls { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; margin-bottom: 25px; background: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); }
+        label { display: block; margin-bottom: 8px; color: var(--accent-color); font-size: 0.8rem; font-weight: bold; }
+        input { width: 100%; background: #0d1117; border: 1px solid var(--border-color); color: #e6edf3; padding: 12px; box-sizing: border-box; border-radius: 4px; font-family: inherit; }
+        
+        .workspace { display: grid; grid-template-columns: 1fr 120px 1fr; gap: 15px; align-items: center; }
+        .box-title { font-size: 0.75rem; color: #8b949e; margin-bottom: 8px; text-align: center; text-transform: uppercase; }
+        textarea { width: 100%; height: 350px; background: #0d1117; border: 1px solid var(--border-color); color: #e6edf3; padding: 15px; box-sizing: border-box; font-family: inherit; border-radius: 6px; resize: none; font-size: 0.9rem; line-height: 1.5; }
+        
+        .actions { display: flex; flex-direction: column; gap: 20px; }
+        button { padding: 12px; cursor: pointer; border: none; font-weight: bold; border-radius: 4px; transition: 0.2s; font-size: 0.8rem; }
+        .btn-encrypt { background: var(--accent-color); color: #fff; }
+        .btn-decrypt { background: var(--success-color); color: #fff; }
+        .btn-detect { background: transparent; color: var(--warn-color); border: 1px solid var(--warn-color); margin-top: 5px; font-size: 0.7rem; }
+        button:hover { filter: brightness(1.2); transform: scale(1.05); }
+        
+        #status { margin-top: 20px; text-align: center; font-size: 0.85rem; font-weight: bold; min-height: 1.5em; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>VAULT V2.8 // LOGIC FIXED</h2>
+
+    <div class="controls">
+        <div class="input-group">
+            <label>🔑 1. 根口令 (MASTER ROOT)</label>
+            <input type="password" id="rootPass" placeholder="輸入金鑰...">
+        </div>
+        <div class="input-group">
+            <label>📍 2. 偏移碼 (TAG)</label>
+            <input type="text" id="offset" placeholder="例如: 8829">
+            <button class="btn-detect" onclick="detectTag()">🔍 偵測左側密文 TAG</button>
+        </div>
+    </div>
+
+    <div class="workspace">
+        <div>
+            <div class="box-title">【 密文區 / Ciphertext 】</div>
+            <textarea id="cipherText" placeholder="解密時：在此貼上收到的亂碼..."></textarea>
+        </div>
+        
+        <div class="actions">
+            <button class="btn-encrypt" onclick="process(true)">加密 ➔<br>產生密文</button>
+            <button class="btn-decrypt" onclick="process(false)">解密 ⬅<br>還原明文</button>
+        </div>
+
+        <div>
+            <div class="box-title">【 明文區 / Plaintext 】</div>
+            <textarea id="plainText" placeholder="加密時：在此輸入私密訊息..."></textarea>
+        </div>
+    </div>
+
+    <div id="status"></div>
+</div>
+
+<script>
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const buffToBase64 = (buff) => btoa(String.fromCharCode.apply(null, new Uint8Array(buff)));
+    const base64ToBuff = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+    function detectTag() {
+        try {
+            const data = document.getElementById('cipherText').value.trim();
+            if(!data) throw new Error();
+            const combined = base64ToBuff(data);
+            const tagLen = combined[0];
+            const extractedTag = decoder.decode(combined.slice(1, 1 + tagLen));
+            document.getElementById('offset').value = extractedTag;
+            document.getElementById('status').innerHTML = "<span style='color: var(--warn-color);'>已提取 TAG: " + extractedTag + "</span>";
+        } catch (e) {
+            document.getElementById('status').innerHTML = "<span style='color: #ff7b72;'>⚠️ 無法讀取密文中的 TAG。</span>";
+        }
+    }
+
+    async function deriveKey(root, offset, salt) {
+        const combinedSeed = encoder.encode(root + offset);
+        const baseKey = await crypto.subtle.importKey("raw", combinedSeed, "PBKDF2", false, ["deriveKey"]);
+        return crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
+            baseKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
+        );
+    }
+
+    async function process(isEncrypt) {
+        const root = document.getElementById('rootPass').value;
+        const offset = document.getElementById('offset').value;
+        const status = document.getElementById('status');
+        const cipherArea = document.getElementById('cipherText');
+        const plainArea = document.getElementById('plainText');
+
+        try {
+            if (isEncrypt) {
+                if (!root || !offset || !plainArea.value) { status.innerHTML = "<span style='color: #ff7b72;'>⚠️ 請確保填入 Root, TAG 與右側明文。</span>"; return; }
+                const salt = crypto.getRandomValues(new Uint8Array(16));
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                const key = await deriveKey(root, offset, salt);
+                const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, encoder.encode(plainArea.value));
+                
+                const tagBuf = encoder.encode(offset);
+                const combined = new Uint8Array(1 + tagBuf.length + 16 + 12 + ciphertext.byteLength);
+                combined[0] = tagBuf.length;
+                combined.set(tagBuf, 1);
+                combined.set(salt, 1 + tagBuf.length);
+                combined.set(iv, 1 + tagBuf.length + 16);
+                combined.set(new Uint8Array(ciphertext), 1 + tagBuf.length + 16 + 12);
+
+                cipherArea.value = buffToBase64(combined); // 密文出現在左側
+                status.innerHTML = "<span style='color: var(--accent-color);'>✅ 已將明文轉化為左側密文。</span>";
+            } else {
+                if (!root || !offset || !cipherArea.value) { status.innerHTML = "<span style='color: #ff7b72;'>⚠️ 請確保填入 Root, TAG 與左側密文。</span>"; return; }
+                const combined = base64ToBuff(cipherArea.value);
+                const tagLen = combined[0];
+                const storedTag = decoder.decode(combined.slice(1, 1 + tagLen));
+                
+                if (offset !== storedTag) {
+                    status.innerHTML = "<span style='color: #ff7b72;'>❌ TAG 不符：請確認是否已點擊偵測按鈕或輸入錯誤。</span>";
+                    return;
+                }
+
+                const salt = combined.slice(1 + tagLen, 1 + tagLen + 16);
+                const iv = combined.slice(1 + tagLen + 16, 1 + tagLen + 16 + 12);
+                const ciphertext = combined.slice(1 + tagLen + 16 + 12);
+                const key = await deriveKey(root, offset, salt);
+                const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, ciphertext);
+                
+                plainArea.value = decoder.decode(decrypted); // 明文出現在右側
+                status.innerHTML = "<span style='color: var(--success-color);'>✅ 已將密文還原為右側明文。</span>";
+            }
+        } catch (e) {
+            status.innerHTML = "<span style='color: #ff7b72;'>❌ 失敗：金鑰錯誤或資料已毀損。</span>";
+        }
+    }
+</script>
+</body>
+</html>
